@@ -32,6 +32,7 @@
 #include "../../internal.h"
 #include "internal.h"
 #include "p256-nistz.h"
+#include "p256_p384_common-x86_64.h"
 
 #if !defined(OPENSSL_NO_ASM) &&  \
     (defined(OPENSSL_X86_64) || (defined(OPENSSL_AARCH64_P256) && defined(OPENSSL_AARCH64))) &&    \
@@ -47,75 +48,6 @@ static const BN_ULONG ONE[P256_LIMBS] = {
 
 // Precomputed tables for the default generator
 #include "p256-nistz-table.h"
-
-// Recode window to a signed digit, see |ec_GFp_nistp_recode_scalar_bits| in
-// util.c for details
-static crypto_word_t booth_recode_w5(crypto_word_t in) {
-  crypto_word_t s, d;
-
-  s = ~((in >> 5) - 1);
-  d = (1 << 6) - in - 1;
-  d = (d & s) | (in & ~s);
-  d = (d >> 1) + (d & 1);
-
-  return (d << 1) + (s & 1);
-}
-
-static crypto_word_t booth_recode_w7(crypto_word_t in) {
-  crypto_word_t s, d;
-
-  s = ~((in >> 7) - 1);
-  d = (1 << 8) - in - 1;
-  d = (d & s) | (in & ~s);
-  d = (d >> 1) + (d & 1);
-
-  return (d << 1) + (s & 1);
-}
-
-// copy_conditional copies |src| to |dst| if |move| is one and leaves it as-is
-// if |move| is zero.
-//
-// WARNING: this breaks the usual convention of constant-time functions
-// returning masks.
-static void copy_conditional(BN_ULONG dst[P256_LIMBS],
-                             const BN_ULONG src[P256_LIMBS], BN_ULONG move) {
-  BN_ULONG mask1 = ((BN_ULONG)0) - move;
-  BN_ULONG mask2 = ~mask1;
-
-  dst[0] = (src[0] & mask1) ^ (dst[0] & mask2);
-  dst[1] = (src[1] & mask1) ^ (dst[1] & mask2);
-  dst[2] = (src[2] & mask1) ^ (dst[2] & mask2);
-  dst[3] = (src[3] & mask1) ^ (dst[3] & mask2);
-  if (P256_LIMBS == 8) {
-    dst[4] = (src[4] & mask1) ^ (dst[4] & mask2);
-    dst[5] = (src[5] & mask1) ^ (dst[5] & mask2);
-    dst[6] = (src[6] & mask1) ^ (dst[6] & mask2);
-    dst[7] = (src[7] & mask1) ^ (dst[7] & mask2);
-  }
-}
-
-// is_not_zero returns one iff in != 0 and zero otherwise.
-//
-// WARNING: this breaks the usual convention of constant-time functions
-// returning masks.
-//
-// (define-fun is_not_zero ((in (_ BitVec 64))) (_ BitVec 64)
-//   (bvlshr (bvor in (bvsub #x0000000000000000 in)) #x000000000000003f)
-// )
-//
-// (declare-fun x () (_ BitVec 64))
-//
-// (assert (and (= x #x0000000000000000) (= (is_not_zero x) #x0000000000000001)))
-// (check-sat)
-//
-// (assert (and (not (= x #x0000000000000000)) (= (is_not_zero x) #x0000000000000000)))
-// (check-sat)
-//
-static BN_ULONG is_not_zero(BN_ULONG in) {
-  in |= (0 - in);
-  in >>= BN_BITS2 - 1;
-  return in;
-}
 
 // ecp_nistz256_mod_inverse_sqr_mont sets |r| to (|in| * 2^-256)^-2 * 2^256 mod
 // p. That is, |r| is the modular inverse square of |in| for input and output in
@@ -250,7 +182,7 @@ static void ecp_nistz256_windowed_mul(const EC_GROUP *group, P256_POINT *r,
       ecp_nistz256_select_w5(&h, table, wvalue >> 1);
 
       ecp_nistz256_neg(tmp, h.Y);
-      copy_conditional(h.Y, tmp, (wvalue & 1));
+      copy_conditional(h.Y, tmp, (wvalue & 1), P256_LIMBS);
 
       ecp_nistz256_point_add(r, r, &h);
     }
@@ -273,7 +205,7 @@ static void ecp_nistz256_windowed_mul(const EC_GROUP *group, P256_POINT *r,
   ecp_nistz256_select_w5(&h, table, wvalue >> 1);
 
   ecp_nistz256_neg(tmp, h.Y);
-  copy_conditional(h.Y, tmp, wvalue & 1);
+  copy_conditional(h.Y, tmp, wvalue & 1, P256_LIMBS);
 
   ecp_nistz256_point_add(r, r, &h);
 }
@@ -282,28 +214,6 @@ typedef union {
   P256_POINT p;
   P256_POINT_AFFINE a;
 } p256_point_union_t;
-
-static crypto_word_t calc_first_wvalue(size_t *index, const uint8_t p_str[33]) {
-  static const size_t kWindowSize = 7;
-  static const crypto_word_t kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
-  *index = kWindowSize;
-
-  crypto_word_t wvalue = (p_str[0] << 1) & kMask;
-  return booth_recode_w7(wvalue);
-}
-
-static crypto_word_t calc_wvalue(size_t *index, const uint8_t p_str[33]) {
-  static const size_t kWindowSize = 7;
-  static const crypto_word_t kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
-
-  const size_t off = (*index - 1) / 8;
-  crypto_word_t wvalue =
-      (crypto_word_t)p_str[off] | (crypto_word_t)p_str[off + 1] << 8;
-  wvalue = (wvalue >> ((*index - 1) % 8)) & kMask;
-  *index += kWindowSize;
-
-  return booth_recode_w7(wvalue);
-}
 
 static void ecp_nistz256_point_mul(const EC_GROUP *group, EC_RAW_POINT *r,
                                    const EC_RAW_POINT *p,
@@ -331,13 +241,13 @@ static void ecp_nistz256_point_mul_base(const EC_GROUP *group, EC_RAW_POINT *r,
 
   ecp_nistz256_select_w7(&p.a, ecp_nistz256_precomputed[0], wvalue >> 1);
   ecp_nistz256_neg(p.p.Z, p.p.Y);
-  copy_conditional(p.p.Y, p.p.Z, wvalue & 1);
+  copy_conditional(p.p.Y, p.p.Z, wvalue & 1, P256_LIMBS);
 
   // Convert |p| from affine to Jacobian coordinates. We set Z to zero if |p|
   // is infinity and |ONE| otherwise. |p| was computed from the table, so it
   // is infinity iff |wvalue >> 1| is zero.
   OPENSSL_memset(p.p.Z, 0, sizeof(p.p.Z));
-  copy_conditional(p.p.Z, ONE, is_not_zero(wvalue >> 1));
+  copy_conditional(p.p.Z, ONE, is_not_zero(wvalue >> 1), P256_LIMBS);
 
   for (int i = 1; i < 37; i++) {
     wvalue = calc_wvalue(&index, p_str);
@@ -345,7 +255,7 @@ static void ecp_nistz256_point_mul_base(const EC_GROUP *group, EC_RAW_POINT *r,
     ecp_nistz256_select_w7(&t.a, ecp_nistz256_precomputed[i], wvalue >> 1);
 
     ecp_nistz256_neg(t.p.Z, t.a.Y);
-    copy_conditional(t.a.Y, t.p.Z, wvalue & 1);
+    copy_conditional(t.a.Y, t.p.Z, wvalue & 1, P256_LIMBS);
 
     // Note |ecp_nistz256_point_add_affine| does not work if |p.p| and |t.a|
     // are the same non-infinity point.

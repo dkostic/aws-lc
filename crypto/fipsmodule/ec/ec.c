@@ -234,7 +234,12 @@ DEFINE_METHOD_FUNCTION(struct built_in_curves, OPENSSL_built_in_curves) {
   out->curves[1].comment = "NIST P-384";
   out->curves[1].param_len = 48;
   out->curves[1].params = kP384Params;
-  out->curves[1].method = EC_GFp_mont_method();
+  out->curves[1].method =
+#if !defined(OPENSSL_SMALL) && defined(OPENSSL_X86_64)
+      EC_GFp_nistp384_method();
+#else
+      EC_GFp_mont_method();
+#endif
 
   // 1.2.840.10045.3.1.7
   static const uint8_t kOIDP256[] = {0x2a, 0x86, 0x48, 0xce,
