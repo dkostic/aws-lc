@@ -35,7 +35,7 @@ if(ARCH STREQUAL "x86_64")
   )
 
   # Set the source directory for s2n-bignum assembly files
-  set(S2N_BIGNUM_DIR ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86_att/p384)
+  set(S2N_BIGNUM_DIR ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86_att)
 endif()
 
 if(ARCH STREQUAL "x86")
@@ -90,7 +90,7 @@ if(ARCH STREQUAL "aarch64")
   )
 
   # Set the source directory for s2n-bignum assembly files
-  set(S2N_BIGNUM_DIR ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384)
+  set(S2N_BIGNUM_DIR ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm)
 endif()
 
 if(ARCH STREQUAL "ppc64le")
@@ -157,17 +157,27 @@ if (S2N_BIGNUM_DIR AND UNIX AND NOT APPLE AND NOT MY_ASSEMBLER_IS_TOO_OLD_FOR_AV
   set(
     S2N_BIGNUM_ASM_SOURCES
 
-    bignum_add_p384.S
-    bignum_sub_p384.S
-    bignum_neg_p384.S
-    bignum_tomont_p384.S
-    bignum_deamont_p384.S
-    bignum_montmul_p384.S
-    bignum_montmul_p384_alt.S
-    bignum_montsqr_p384.S
-    bignum_montsqr_p384_alt.S
-    bignum_nonzero_6.S
-    bignum_littleendian_6.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_add_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_sub_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_neg_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_tomont_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_deamont_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_montmul_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_montmul_p384_alt.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_montsqr_p384.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_montsqr_p384_alt.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_nonzero_6.S
+    ${S2N_BIGNUM_DIR}/p384/bignum_littleendian_6.S
+
+    ${S2N_BIGNUM_DIR}/p521/bignum_add_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_sub_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_neg_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_mul_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_mul_p521_alt.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_sqr_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_sqr_p521_alt.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_tolebytes_p521.S
+    ${S2N_BIGNUM_DIR}/p521/bignum_fromlebytes_p521.S
   )
   if(ARCH STREQUAL "x86_64")
     # The files below contain the alternative functions for x86_64.
@@ -175,14 +185,9 @@ if (S2N_BIGNUM_DIR AND UNIX AND NOT APPLE AND NOT MY_ASSEMBLER_IS_TOO_OLD_FOR_AV
     # the same as the non-alternative ones, so they are defined
     # in the corresponding "non-alt" files (bignum_<deamont|tomont>_p384.S)
     list(APPEND S2N_BIGNUM_ASM_SOURCES
-                bignum_tomont_p384_alt.S
-                bignum_deamont_p384_alt.S)
+                ${S2N_BIGNUM_DIR}/p384/bignum_tomont_p384_alt.S
+                ${S2N_BIGNUM_DIR}/p384/bignum_deamont_p384_alt.S)
   endif()
-
-  # Copy s2n-bignum files to the current binary dir
-  foreach(f ${S2N_BIGNUM_ASM_SOURCES})
-    file(COPY ${S2N_BIGNUM_DIR}/${f} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-  endforeach()
 
   if(NOT FIPS_DELOCATE)
     # If we don't have to use the delocate script then s2n-bignum files
@@ -396,3 +401,4 @@ else()
 
   add_dependencies(fipsmodule global_target)
 endif()
+

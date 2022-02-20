@@ -83,3 +83,8 @@ extern void bignum_tolebytes_6(uint8_t z[static 48], const uint64_t x[static 6])
 // Input x[6]; output function return
 extern uint64_t bignum_nonzero_6(const uint64_t x[static 6]);
 
+// Convert little-endian bytes to 9-digit 528-bit bignum
+extern void bignum_fromlebytes_p521(uint64_t z[static 9], const uint8_t x[static 66]);
+
+// Convert 9-digit 528-bit bignum to little-endian bytes
+extern void bignum_tolebytes_p521(uint8_t z[static 66], const uint64_t x[static 9]);
