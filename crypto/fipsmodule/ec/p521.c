@@ -577,11 +577,14 @@ static crypto_word_t p521_get_bit(const uint8_t *in, int i) {
   return (in[i >> 3] >> (i & 7)) & 1;
 }
 
+#if !defined(P521_MUL_WSIZE)
 // Constants for scalar encoding in the scalar multiplication functions.
-#define P521_MUL_WSIZE        (7) // window size w
-// Assert the window size is 7 because the pre-computed table in |p521_table.h|
-// is generated for window size 7.
-OPENSSL_STATIC_ASSERT(P521_MUL_WSIZE == 7,
+#define P521_MUL_WSIZE (7) // window size w
+#endif
+
+// Assert the window size is 5, 6, or 7 because those are the only window sizes
+// for which we have the precomputed table.
+OPENSSL_STATIC_ASSERT(P521_MUL_WSIZE >= 5 && P521_MUL_WSIZE <= 7,
     p521_scalar_mul_window_size_is_not_equal_to_seven)
 
 #define P521_MUL_TWO_TO_WSIZE (1 << P521_MUL_WSIZE)
@@ -763,7 +766,13 @@ static void ec_GFp_nistp521_point_mul(const EC_GROUP *group, EC_RAW_POINT *r,
 }
 
 // Include the precomputed table for the based point scalar multiplication.
-#include "p521_table.h"
+#if (P521_MUL_WSIZE == 5)
+#include "p521_table_w5.h"
+#elif (P521_MUL_WSIZE == 6)
+#include "p521_table_w6.h"
+#else
+#include "p521_table_w7.h"
+#endif
 
 // Multiplication of the base point G of P-521 curve with the given scalar.
 // The product is computed with the Comb method using the precomputed table
@@ -833,9 +842,9 @@ static void ec_GFp_nistp521_point_mul_base(const EC_GROUP *group,
   p521_felem_mul_scalar_rwnaf(rnaf, scalar->bytes);
 
   // Process the 4 groups of digits starting from group (3) down to group (0).
-  for (size_t i = 0; i < 4; i++) {
+  for (size_t i = 3; i < 4; i--) {
     // Double |res| 7 times in each iteration, except in the first one.
-    for (size_t j = 0; i != 0 && j < P521_MUL_WSIZE; j++) {
+    for (size_t j = 0; i != 3 && j < P521_MUL_WSIZE; j++) {
       p521_point_double(res[0], res[1], res[2], res[0], res[1], res[2]);
     }
 
@@ -844,7 +853,7 @@ static void ec_GFp_nistp521_point_mul_base(const EC_GROUP *group,
     // doubling can't happen).
     // For group (3) we process digits s_71 to s_3, for group (2) s_74 to s_2,
     // group (1) s_73 to s_1, and for group (0) s_72 to s_0.
-    const size_t start_idx = P521_MUL_NWINDOWS - i - (i == 0 ? 4 : 0);
+    const size_t start_idx = ((P521_MUL_NWINDOWS - i - 1)/4)*4 + i;
     for (size_t j = start_idx; j < P521_MUL_NWINDOWS; j -= 4) {
       // For each digit |d| in the current group read the corresponding point
       // from the table and add it to |res|. If |d| is negative, negate
@@ -1079,8 +1088,6 @@ DEFINE_METHOD_FUNCTION(EC_METHOD, EC_GFp_nistp521_method) {
       ec_simple_scalar_to_montgomery_inv_vartime;
   out->cmp_x_coordinate = ec_GFp_simple_cmp_x_coordinate;
 }
-
-#undef BORINGSSL_NISTP521_64BIT
 
 // ----------------------------------------------------------------------------
 //  Analysis of the doubling case occurrence in the Joye-Tunstall recoding:
