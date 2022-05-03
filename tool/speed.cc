@@ -847,7 +847,69 @@ static bool SpeedECDHCurve(const std::string &name, int nid,
   }
 
   results.Print(name);
+
   return true;
+}
+
+static bool SpeedECmulCurve(const std::string &name, int nid,
+                       const std::string &selected) {
+  if (!selected.empty() && name.find(selected) == std::string::npos) {
+    return true;
+  }
+
+  EC_GROUP *group =EC_GROUP_new_by_curve_name(nid);
+  EC_POINT *pout = EC_POINT_new(group);
+  EC_POINT *pin1 = EC_POINT_new(group);
+  BN_CTX   *ctx = BN_CTX_new();
+  BIGNUM   *pin0_scalar = BN_new();
+  BIGNUM   *pin1_scalar = BN_new();
+
+  BN_set_u64(pin0_scalar, 123);
+  BN_set_u64(pin1_scalar, 321);
+
+  EC_POINT_mul(group, pin1, pin1_scalar, nullptr, nullptr, ctx);
+
+  TimeResults results;
+  if (!TimeFunction(&results, [group, pout, ctx, pin0_scalar]() -> bool {
+        if (!EC_POINT_mul(group, pout, pin0_scalar, nullptr, nullptr, ctx)) {
+          return false;
+        }
+
+        return true;
+      })) {
+    return false;
+  }
+  results.Print(name + " mul0 ");
+
+  if (!TimeFunction(&results, [group, pout, ctx, pin1, pin1_scalar]() -> bool {
+        if (!EC_POINT_mul(group, pout, nullptr, pin1, pin1_scalar, ctx)) {
+          return false;
+        }
+
+        return true;
+      })) {
+    return false;
+  }
+  results.Print(name + " mul1 ");
+
+  if (!TimeFunction(&results, [group, pout, pin1, ctx, pin0_scalar, pin1_scalar]() -> bool {
+        if (!EC_POINT_mul(group, pout, pin0_scalar, pin1, pin1_scalar, ctx)) {
+          return false;
+        }
+
+        return true;
+      })) {
+    return false;
+  }
+  results.Print(name + " mul2");
+
+  return true;
+}
+
+static bool SpeedECMUL(const std::string &selected) {
+  return SpeedECmulCurve("ECMUL P-256", NID_X9_62_prime256v1, selected) &&
+         SpeedECmulCurve("ECMUL P-384", NID_secp384r1, selected) &&
+         SpeedECmulCurve("ECMUL P-521", NID_secp521r1, selected);
 }
 
 static bool SpeedECDSACurve(const std::string &name, int nid,
@@ -1599,6 +1661,7 @@ bool Speed(const std::vector<std::string> &args) {
      !SpeedHmacOneShot(EVP_sha512(), "HMAC-SHA512-OneShot", selected) ||
      !SpeedRandom(selected) ||
      !SpeedECDH(selected) ||
+     !SpeedECMUL(selected) ||
      !SpeedECDSA(selected) ||
      !SpeedScrypt(selected) ||
      !SpeedRSA(selected) ||
