@@ -78,7 +78,6 @@ if(ARCH STREQUAL "aarch64")
     armv8-mont.${ASM_EXT}
     ghash-neon-armv8.${ASM_EXT}
     ghashv8-armx.${ASM_EXT}
-    keccak1600-armv8.${ASM_EXT}
     md5-armv8.${ASM_EXT}
     p256-armv8-asm.${ASM_EXT}
     p256_beeu-armv8-asm.${ASM_EXT}

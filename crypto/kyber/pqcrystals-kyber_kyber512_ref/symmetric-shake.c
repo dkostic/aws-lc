@@ -3,7 +3,8 @@
 #include <string.h>
 #include "params.h"
 #include "symmetric.h"
-#include "fips202.h"
+
+#include "../../fipsmodule/sha/internal.h"
 
 /*************************************************
 * Name:        kyber_shake128_absorb
@@ -26,7 +27,27 @@ void kyber_shake128_absorb(keccak_state *state,
   extseed[KYBER_SYMBYTES+0] = x;
   extseed[KYBER_SYMBYTES+1] = y;
 
-  shake128_absorb_once(state, extseed, sizeof(extseed));
+  /* shake128_absorb_once(state, extseed, sizeof(extseed)); */
+
+  for (size_t i = 0; i < 25; i++) {
+      state->s[i] = 0;
+  }
+
+  size_t rem = SHA3_Absorb((uint64_t (*)[5])state->s, extseed, sizeof(extseed), SHAKE128_RATE);
+
+  for (size_t i = 0; i < rem; i++) {
+      state->s[i/8] ^= (uint64_t)extseed[i + sizeof(extseed) - rem] << 8*(i%8);
+  }
+
+  uint64_t p = 0x1f;
+  state->s[rem/8] ^= p << 8*(rem%8);
+  state->s[(SHAKE128_RATE-1)/8] ^= 1ULL << 63;
+}
+
+void kyber_shake128_squeeze(uint8_t *out, int nblocks, keccak_state *state)
+{
+  KeccakF1600((uint64_t (*)[5])state->s);
+  SHA3_Squeeze((uint64_t (*)[5])state->s, out, (nblocks) * SHAKE128_RATE, SHAKE128_RATE);
 }
 
 /*************************************************
@@ -47,5 +68,5 @@ void kyber_shake256_prf(uint8_t *out, size_t outlen, const uint8_t key[KYBER_SYM
   memcpy(extkey, key, KYBER_SYMBYTES);
   extkey[KYBER_SYMBYTES] = nonce;
 
-  shake256(out, outlen, extkey, sizeof(extkey));
+  SHAKE256(extkey, sizeof(extkey), out, outlen*8);
 }
