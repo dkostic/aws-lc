@@ -211,7 +211,11 @@ void indcpa_keypair_derand(uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES],
   uint8_t nonce = 0;
   polyvec a[KYBER_K], e, pkpv, skpv;
 
-  hash_g(buf, coins, KYBER_SYMBYTES);
+  uint8_t coins_with_domain_separator[KYBER_SYMBYTES + 1];
+  memcpy(coins_with_domain_separator, coins, KYBER_SYMBYTES);
+  coins_with_domain_separator[KYBER_SYMBYTES] = KYBER_K;
+
+  hash_g(buf, coins_with_domain_separator, KYBER_SYMBYTES + 1);
 
   gen_a(a, publicseed);
 
