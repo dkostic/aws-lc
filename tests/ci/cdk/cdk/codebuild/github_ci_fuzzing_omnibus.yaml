@@ -50,3 +50,14 @@ batch:
         variables:
           AWS_LC_CI_COMPILER_ENV: clang-15
           AWS_LC_CI_TARGET: "tests/ci/run_cryptofuzz.sh"
+
+    - identifier: automatic_check
+      buildspec: ./tests/ci/codebuild/common/run_simple_target.yml
+      env:
+        type: LINUX_CONTAINER
+        privileged-mode: true
+        compute-type: BUILD_GENERAL1_LARGE
+        image: 620771051181.dkr.ecr.us-west-2.amazonaws.com/aws-lc/amazonlinux:2023
+        variables:
+          AWS_LC_CI_COMPILER_ENV: clang-15
+          AWS_LC_CI_TARGET: "echo automatic-check-placeholder"
