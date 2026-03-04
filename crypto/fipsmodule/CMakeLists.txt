@@ -442,11 +442,25 @@ if(FIPS_DELOCATE)
     set(DELOCATE_EXTRA_ARGS "-no-se-debug-directives")
   endif()
 
-  go_executable(delocate github.com/aws/aws-lc/util/fipstools/delocate)
+  # Build the C++ delocate tool (replaces the Go version).
+  set(DELOCATE_CC_DIR ${AWSLC_SOURCE_DIR}/util/fipstools/delocate/cc)
+  add_executable(delocate
+    ${DELOCATE_CC_DIR}/delocate.cc
+    ${DELOCATE_CC_DIR}/parser.cc
+    ${DELOCATE_CC_DIR}/transform.cc
+    ${DELOCATE_CC_DIR}/ar.cc
+  )
+  target_include_directories(delocate PRIVATE ${DELOCATE_CC_DIR})
+  target_compile_features(delocate PRIVATE cxx_std_17)
+  # delocate is a build-time host tool, not linked into the product.
+  # It uses exceptions for error handling internally, and does not need
+  # the strict warning/error flags used by the library itself.
+  target_compile_options(delocate PRIVATE -fexceptions -Wno-missing-declarations)
+
   add_custom_command(
     OUTPUT bcm-delocated.S
     COMMAND
-    ./delocate
+    $<TARGET_FILE:delocate>
     -a $<TARGET_FILE:bcm_c_generated_asm>
     -o bcm-delocated.S
     -cc ${CMAKE_ASM_COMPILER}
