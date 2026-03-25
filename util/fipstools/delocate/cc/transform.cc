@@ -466,6 +466,9 @@ bool Delocation::processInput(const InputFile &input, std::string &errOut) {
           case ProcessorType::X86_64:
             ok = processIntelInstruction(statement, node->up, errOut);
             break;
+          case ProcessorType::AARCH64:
+            ok = processAarch64Instruction(statement, node->up, errOut);
+            break;
           default:
             errOut = "unsupported processor type";
             return false;
@@ -1381,6 +1384,291 @@ endArgs:
   return true;
 }
 
+// aarch64 specific helpers
+
+std::string Delocation::gotHelperName(const std::string &symbol) {
+  return ".Lboringssl_loadgot_" + symbol;
+}
+
+void Delocation::writeAarch64Function(
+    std::string &out, const std::string &funcName,
+    std::function<void(std::string &)> writeContents) {
+  out += ".p2align 2\n";
+  out += ".hidden " + funcName + "\n";
+  out += ".type " + funcName + ", @function\n";
+  out += funcName + ":\n";
+  out += ".cfi_startproc\n";
+  out += "\thint #34 // bti c\n";
+  writeContents(out);
+  out += ".cfi_endproc\n";
+  out += ".size " + funcName + ", .-" + funcName + "\n";
+}
+
+bool Delocation::loadAarch64Address(Node *statement,
+                                     const std::string &targetReg,
+                                     const std::string &symbol,
+                                     const std::string &offsetStr,
+                                     std::string &errOut) {
+  writeCommentedNode(statement);
+
+  bool isKnown = symbols_.count(symbol) > 0;
+  bool isLocal = startsWith(symbol, ".L");
+
+  if (isKnown || isLocal || isSynthesized(symbol, ProcessorType::AARCH64)) {
+    std::string sym = symbol;
+    if (isLocal) {
+      sym = mapLocalSymbol(symbol);
+    } else if (isKnown) {
+      sym = localTargetName(symbol);
+    }
+    writeStr("\tadr " + targetReg + ", " + sym + offsetStr + "\n");
+    return true;
+  }
+
+  if (!offsetStr.empty()) {
+    throw std::runtime_error("non-zero offset for helper-based reference");
+  }
+
+  std::string helperFunc;
+  if (symbol == "OPENSSL_armcap_P") {
+    helperFunc = ".LOPENSSL_armcap_P_addr";
+  } else {
+    gotExternalsNeeded_.insert(symbol);
+    helperFunc = gotHelperName(symbol);
+  }
+
+  writeStr("\tsub sp, sp, 128\n");
+  writeStr("\tstp x0, x30, [sp, #-16]!\n");
+  writeStr("\tbl " + helperFunc + "\n");
+
+  if (targetReg == "x0") {
+    writeStr("\tldp xzr, x30, [sp], #16\n");
+  } else if (targetReg == "x30") {
+    writeStr("\tmov " + targetReg + ", x0\n");
+    writeStr("\tldp x0, xzr, [sp], #16\n");
+  } else {
+    writeStr("\tmov " + targetReg + ", x0\n");
+    writeStr("\tldp x0, x30, [sp], #16\n");
+  }
+
+  writeStr("\tadd sp, sp, 128\n");
+  return true;
+}
+
+bool Delocation::processAarch64Instruction(Node *&statement, Node *instruction,
+                                            std::string &errOut) {
+  assertNodeType(instruction, PegRule::InstructionName);
+  std::string instructionName = contents(instruction);
+
+  auto argNodes = instructionArgs(instruction->next);
+
+  // Instructions that take condition codes or special register names
+  // as arguments that look like symbol references.
+  if (instructionName == "ccmn" || instructionName == "ccmp" ||
+      instructionName == "cinc" || instructionName == "cinv" ||
+      instructionName == "cneg" || instructionName == "csel" ||
+      instructionName == "cset" || instructionName == "csetm" ||
+      instructionName == "csinc" || instructionName == "csinv" ||
+      instructionName == "csneg" || instructionName == "fcsel") {
+    writeNode(statement);
+    return true;
+  }
+
+  // fmov can take floating-point immediates that look like symbol references.
+  if (instructionName == "fmov") {
+    writeNode(statement);
+    return true;
+  }
+
+  // mrs takes special register names that look like symbol references.
+  if (instructionName == "mrs") {
+    writeNode(statement);
+    return true;
+  }
+
+  if (instructionName == "adrp") {
+    assertNodeType(argNodes[0], PegRule::RegisterOrConstant);
+    std::string targetReg = contents(argNodes[0]);
+    if (!startsWith(targetReg, "x")) {
+      throw std::runtime_error("adrp targetting register " + targetReg +
+                               ", which has the wrong size");
+    }
+
+    std::string symbol, offset;
+    switch (argNodes[1]->rule) {
+      case PegRule::GOTSymbolOffset:
+        symbol = contents(argNodes[1]->up);
+        break;
+      case PegRule::MemoryRef: {
+        assertNodeType(argNodes[1]->up, PegRule::SymbolRef);
+        std::string empty;
+        Node *node = gatherOffsets(argNodes[1]->up->up, empty);
+        if (!empty.empty()) {
+          throw std::runtime_error("prefix offsets found for adrp");
+        }
+        symbol = contents(node);
+        gatherOffsets(node->next, offset);
+        break;
+      }
+      default:
+        throw std::runtime_error(
+            std::string("Unhandled adrp argument type ") +
+            pegRuleName(argNodes[1]->rule));
+    }
+
+    return loadAarch64Address(statement, targetReg, symbol, offset, errOut);
+  }
+
+  if (instructionName == "bl") {
+    std::string bssGetSymbol = contents(argNodes[0]);
+    if (endsWith(bssGetSymbol, "_bss_get")) {
+      std::string trimmed =
+          bssGetSymbol.substr(0, bssGetSymbol.size() - 8);
+      bssAccessorsNeeded_[trimmed] = trimmed;
+    }
+  }
+
+  // General argument processing
+  std::vector<std::string> args;
+  bool changed = false;
+
+  for (size_t i = 0; i < argNodes.size(); i++) {
+    Node *arg = argNodes[i];
+    Node *fullArg = arg;
+
+    switch (arg->rule) {
+      case PegRule::RegisterOrConstant:
+      case PegRule::LocalLabelRef:
+      case PegRule::ARMConstantTweak:
+        args.push_back(contents(fullArg));
+        break;
+
+      case PegRule::GOTSymbolOffset:
+        throw std::runtime_error("unreachable GOTSymbolOffset in arg loop");
+
+      case PegRule::MemoryRef: {
+        Node *ref = arg->up;
+
+        switch (ref->rule) {
+          case PegRule::SymbolRef: {
+            auto mr = parseMemRef(arg->up);
+            std::string symbol = mr.symbol;
+            std::string offset = mr.offset;
+            bool didChange = mr.didChange;
+            bool symbolIsLocal = mr.symbolIsLocal;
+            changed = didChange;
+
+            if (isFipsScopeMarkers(symbol)) {
+              std::string redirector = redirectorName(symbol);
+              redirectors_[symbol] = redirector;
+              symbol = redirector;
+              changed = true;
+            } else if (symbols_.count(symbol)) {
+              symbol = localTargetName(symbol);
+              changed = true;
+            } else if (!symbolIsLocal &&
+                       !isSynthesized(symbol, ProcessorType::AARCH64)) {
+              std::string redirector = redirectorName(symbol);
+              redirectors_[symbol] = redirector;
+              symbol = redirector;
+              changed = true;
+            } else if (didChange && symbolIsLocal && !offset.empty()) {
+              symbol = symbol + offset;
+            }
+
+            args.push_back(symbol);
+            break;
+          }
+
+          case PegRule::ARMBaseIndexScale: {
+            Node *parts = ref->up;
+            assertNodeType(parts, PegRule::ARMRegister);
+            std::string baseAddrReg = contents(parts);
+            parts = skipWS(parts->next);
+
+            if (parts != nullptr) {
+              if (parts->rule == PegRule::ARMGOTLow12) {
+                if (instructionName != "ldr" && instructionName != "ldrsw") {
+                  throw std::runtime_error(
+                      "Symbol reference outside of ldr/ldrsw instruction");
+                }
+                if (skipWS(parts->next) != nullptr ||
+                    parts->up->next != nullptr) {
+                  throw std::runtime_error(
+                      "can't handle tweak or post-increment with symbol "
+                      "references");
+                }
+
+                writeCommentedNode(statement);
+                if (baseAddrReg != args[0]) {
+                  writeStr("\tmov " + args[0] + ", " + baseAddrReg + "\n");
+                }
+                return true;
+              } else if (parts->rule == PegRule::Low12BitsSymbolRef) {
+                if (instructionName != "ldr" && instructionName != "ldrsw") {
+                  throw std::runtime_error(
+                      "Symbol reference outside of ldr/ldrsw instruction");
+                }
+                if (skipWS(parts->next) != nullptr) {
+                  throw std::runtime_error(
+                      "can't handle tweak with symbol references");
+                }
+
+                args.push_back("[" + baseAddrReg + "]");
+                changed = true;
+                continue;
+              }
+            }
+
+            args.push_back(contents(fullArg));
+            break;
+          }
+
+          case PegRule::Low12BitsSymbolRef: {
+            if (instructionName != "add") {
+              throw std::runtime_error(
+                  "unsure how to handle " + instructionName +
+                  " instruction using lo12");
+            }
+            if (!startsWith(args[0], "x") || !startsWith(args[1], "x")) {
+              throw std::runtime_error(
+                  "address arithmetic with incorrectly sized register");
+            }
+
+            if (args[0] == args[1]) {
+              writeCommentedNode(statement);
+              return true;
+            }
+
+            args.push_back("#0");
+            changed = true;
+            break;
+          }
+
+          default:
+            throw std::runtime_error(
+                std::string("unhandled MemoryRef type ") +
+                pegRuleName(ref->rule));
+        }
+        break;
+      }
+
+      default:
+        throw std::runtime_error(
+            std::string("unknown instruction argument type ") +
+            pegRuleName(arg->rule));
+    }
+  }
+
+  if (changed) {
+    writeCommentedNode(statement);
+    writeStr("\t" + instructionName + "\t" + join(args, ", ") + "\n");
+  } else {
+    writeNode(statement);
+  }
+  return true;
+}
+
 // Transform
 
 bool Delocation::transform(std::string &out,
@@ -1552,6 +1840,11 @@ bool Delocation::transform(std::string &out,
       out += ".type " + redirector + ", @function\n";
       out += redirector + ":\n";
       out += "\tjmp\t" + name + "\n";
+    } else if (proc == ProcessorType::AARCH64) {
+      std::string n = name;
+      writeAarch64Function(out, redirector, [&n](std::string &w) {
+        w += "\tb " + n + "\n";
+      });
     }
   }
 
@@ -1568,7 +1861,35 @@ bool Delocation::transform(std::string &out,
       out += ".type " + funcName + ", @function\n";
       out += funcName + ":\n";
       out += "\tleaq\t" + target + "(%rip), %rax\n\tret\n";
+    } else if (proc == ProcessorType::AARCH64) {
+      std::string t = target;
+      writeAarch64Function(out, funcName, [&t](std::string &w) {
+        w += "\tadrp x0, " + t + "\n";
+        w += "\tadd x0, x0, :lo12:" + t + "\n";
+        w += "\tret\n";
+      });
     }
+  }
+
+  // aarch64 specific epilogue
+  if (proc == ProcessorType::AARCH64) {
+    std::vector<std::string> externalNames(gotExternalsNeeded_.begin(),
+                                           gotExternalsNeeded_.end());
+    std::sort(externalNames.begin(), externalNames.end());
+    for (const auto &symbol : externalNames) {
+      std::string s = symbol;
+      writeAarch64Function(out, gotHelperName(symbol), [&s](std::string &w) {
+        w += "\tadrp x0, :got:" + s + "\n";
+        w += "\tldr x0, [x0, :got_lo12:" + s + "]\n";
+        w += "\tret\n";
+      });
+    }
+
+    writeAarch64Function(out, ".LOPENSSL_armcap_P_addr", [](std::string &w) {
+      w += "\tadrp x0, OPENSSL_armcap_P\n";
+      w += "\tadd x0, x0, :lo12:OPENSSL_armcap_P\n";
+      w += "\tret\n";
+    });
   }
 
   // x86-64 specific epilogue

@@ -167,6 +167,17 @@ class Delocation {
                            const std::string &section, bool redzoneCleared);
   static std::pair<WrapperFunc, std::string> saveRegister(
       std::string *w, const std::vector<std::string> &avoidRegs);
+
+  // aarch64 specific
+  bool processAarch64Instruction(Node *&statement, Node *instruction,
+                                  std::string &errOut);
+  bool loadAarch64Address(Node *statement, const std::string &targetReg,
+                           const std::string &symbol,
+                           const std::string &offsetStr, std::string &errOut);
+  static void writeAarch64Function(
+      std::string &out, const std::string &funcName,
+      std::function<void(std::string &)> writeContents);
+  static std::string gotHelperName(const std::string &symbol);
 };
 
 // Path helpers

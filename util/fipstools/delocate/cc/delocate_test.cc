@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  // Test table matching the Go version (excluding ppc64le and aarch64 tests)
+  // Test table matching the Go version (excluding ppc64le tests)
   std::vector<TestCase> tests = {
       {"generic-FileDirectives", {}, {"in.s"}, "out.s", true},
       {"generic-FileDirectives-no-start-end", {}, {"in.s"}, "out.s", false},
@@ -57,6 +57,7 @@ int main(int argc, char **argv) {
       {"x86_64-ThreeArg", {}, {"in.s"}, "out.s", true},
       {"x86_64-FourArg", {}, {"in.s"}, "out.s", true},
       {"x86_64-Relro", {}, {"in.s"}, "out.s", true},
+      {"aarch64-Basic", {}, {"in.s"}, "out.s", true},
   };
 
   int passed = 0;
