@@ -51,6 +51,22 @@ foo:
 
 	bl bss_symbol_bss_get
 
+	// Known symbol address load (global function defined in module)
+	adrp x0, foo
+	add x1, x0, :lo12:foo
+
+	// Known symbol address load with no-op add
+	adrp x0, foo
+	add x0, x0, :lo12:foo
+
+	// Known symbol load
+	adrp x10, foo
+	ldr x0, [x10, :lo12:foo]
+
+	// Known symbol address load with offset
+	adrp x6, foo+4096
+	add x6, x6, :lo12:foo+4096
+
 	// Regression test for a two-digit index.
 	ld1 { v1.b }[10], [x9]
 

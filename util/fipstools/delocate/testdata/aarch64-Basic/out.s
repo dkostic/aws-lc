@@ -142,6 +142,47 @@ foo:
 
 	bl bss_symbol_bss_get
 
+	// Known symbol address load (global function defined in module)
+// WAS adrp x0, foo
+	sub sp, sp, 128
+	stp x0, x30, [sp, #-16]!
+	bl .Lboringssl_loadaddr_.Lfoo_local_target
+	ldp xzr, x30, [sp], #16
+	add sp, sp, 128
+// WAS add x1, x0, :lo12:foo
+	add	x1, x0, #0
+
+	// Known symbol address load with no-op add
+// WAS adrp x0, foo
+	sub sp, sp, 128
+	stp x0, x30, [sp, #-16]!
+	bl .Lboringssl_loadaddr_.Lfoo_local_target
+	ldp xzr, x30, [sp], #16
+	add sp, sp, 128
+// WAS add x0, x0, :lo12:foo
+
+	// Known symbol load
+// WAS adrp x10, foo
+	sub sp, sp, 128
+	stp x0, x30, [sp, #-16]!
+	bl .Lboringssl_loadaddr_.Lfoo_local_target
+	mov x10, x0
+	ldp x0, x30, [sp], #16
+	add sp, sp, 128
+// WAS ldr x0, [x10, :lo12:foo]
+	ldr	x0, [x10]
+
+	// Known symbol address load with offset
+// WAS adrp x6, foo+4096
+	sub sp, sp, 128
+	stp x0, x30, [sp, #-16]!
+	bl .Lboringssl_loadaddr_.Lfoo_local_target
+	mov x6, x0
+	ldp x0, x30, [sp], #16
+	add sp, sp, 128
+	add x6, x6, +4096
+// WAS add x6, x6, :lo12:foo+4096
+
 	// Regression test for a two-digit index.
 	ld1 { v1.b }[10], [x9]
 
@@ -313,6 +354,17 @@ bss_symbol_bss_get:
 	ret
 .cfi_endproc
 .size .Lboringssl_loadgot_stderr, .-.Lboringssl_loadgot_stderr
+.p2align 2
+.hidden .Lboringssl_loadaddr_.Lfoo_local_target
+.type .Lboringssl_loadaddr_.Lfoo_local_target, @function
+.Lboringssl_loadaddr_.Lfoo_local_target:
+.cfi_startproc
+	hint #34 // bti c
+	adrp x0, .Lfoo_local_target
+	add x0, x0, :lo12:.Lfoo_local_target
+	ret
+.cfi_endproc
+.size .Lboringssl_loadaddr_.Lfoo_local_target, .-.Lboringssl_loadaddr_.Lfoo_local_target
 .p2align 2
 .hidden .LOPENSSL_armcap_P_addr
 .type .LOPENSSL_armcap_P_addr, @function

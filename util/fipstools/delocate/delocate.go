@@ -104,7 +104,12 @@ type delocation struct {
 	// tocLoaders is a set of symbol names for which TOC helper functions
 	// are required. (ppc64le only.)
 	tocLoaders map[string]struct{}
-	// gotExternalsNeeded is a set of symbol names for which we need
+	// localAddrHelpers is a set of known symbol names (already converted
+	// to local target names) for which address helper functions are needed
+	// on aarch64. These helpers use adrp+add (which the linker resolves)
+	// and live outside the FIPS module boundary, avoiding the ±1MiB reach
+	// limitation of adr within the module.
+	localAddrHelpers map[string]struct{}	// gotExternalsNeeded is a set of symbol names for which we need
 	// “delta” symbols: symbols that contain the offset from their location
 	// to the memory in question.
 	gotExternalsNeeded map[string]struct{}
@@ -440,6 +445,12 @@ func instructionArgs(node *node32) (argNodes []*node32) {
 
 // Aarch64 support
 
+// localAddrHelperName returns the name of a synthesised function that loads
+// the address of a known symbol using adrp+add (outside the FIPS module).
+func localAddrHelperName(symbol string) string {
+	return ".Lboringssl_loadaddr_" + symbol
+}
+
 // gotHelperName returns the name of a synthesised function that returns an
 // address from the GOT.
 func gotHelperName(symbol string) string {
@@ -449,29 +460,65 @@ func gotHelperName(symbol string) string {
 // loadAarch64Address emits instructions to put the address of |symbol|
 // (optionally adjusted by |offsetStr|) into |targetReg|.
 func (d *delocation) loadAarch64Address(statement *node32, targetReg string, symbol string, offsetStr string) (*node32, error) {
-	// There are two paths here: either the symbol is known to be local in which
-	// case adr is used to get the address (within 1MiB), or a GOT reference is
-	// really needed in which case the code needs to jump to a helper function.
+	// There are three paths here:
 	//
-	// A helper function is needed because using code appears to be the only way
-	// to load a GOT value. On other platforms we have ".quad foo@GOT" outside of
-	// the module, but on Aarch64 that results in a "COPY" relocation and linker
-	// comments suggest it's a weird hack. So, for each GOT symbol needed, we emit
-	// a function outside of the module that returns the address from the GOT in
-	// x0.
+	// 1. Local (.L*) symbols use adr directly since they are always close
+	//    to their reference site (within ±1MiB).
+	//
+	// 2. Known global symbols (defined within the FIPS module) use a helper
+	//    function that lives outside the module boundary. The helper uses
+	//    adrp+add (which the linker resolves) to load the full address.
+	//    This avoids the ±1MiB reach limitation of adr for large modules.
+	//
+	// 3. External/GOT symbols use a helper function that loads and
+	//    dereferences the GOT entry.
 
 	d.writeCommentedNode(statement)
 
 	_, isKnown := d.symbols[symbol]
 	isLocal := strings.HasPrefix(symbol, ".L")
-	if isKnown || isLocal || isSynthesized(symbol, aarch64) {
+	if isLocal || isSynthesized(symbol, aarch64) {
 		if isLocal {
 			symbol = d.mapLocalSymbol(symbol)
-		} else if isKnown {
-			symbol = localTargetName(symbol)
 		}
 
 		d.output.WriteString("\tadr " + targetReg + ", " + symbol + offsetStr + "\n")
+
+		return statement, nil
+	}
+
+	if isKnown {
+		// Known symbols within the module use address helper functions
+		// that live outside the hashed FIPS region. This avoids the ±1MiB
+		// adr reach limit while keeping the module's .text free of
+		// relocations (required for the FIPS integrity check).
+		localSymbol := localTargetName(symbol)
+
+		d.localAddrHelpers[localSymbol] = struct{}{}
+		helperFunc := localAddrHelperName(localSymbol)
+
+		// Use the same save/restore pattern as GOT helpers.
+		d.output.WriteString("\tsub sp, sp, 128\n")
+		d.output.WriteString("\tstp x0, x30, [sp, #-16]!\n")
+		d.output.WriteString("\tbl " + helperFunc + "\n")
+
+		if targetReg == "x0" {
+			d.output.WriteString("\tldp xzr, x30, [sp], #16\n")
+		} else if targetReg == "x30" {
+			d.output.WriteString("\tmov " + targetReg + ", x0\n")
+			d.output.WriteString("\tldp x0, xzr, [sp], #16\n")
+		} else {
+			d.output.WriteString("\tmov " + targetReg + ", x0\n")
+			d.output.WriteString("\tldp x0, x30, [sp], #16\n")
+		}
+
+		d.output.WriteString("\tadd sp, sp, 128\n")
+
+		// If there's an offset (e.g., symbol+4096), add it after loading
+		// the base address.
+		if len(offsetStr) != 0 {
+			d.output.WriteString("\tadd " + targetReg + ", " + targetReg + ", " + offsetStr + "\n")
+		}
 
 		return statement, nil
 	}
@@ -2291,6 +2338,7 @@ func transform(w stringWriter, includes []string, inputs []inputFile, startEndDe
 		redirectors:              make(map[string]string),
 		bssAccessorsNeeded:       make(map[string]string),
 		tocLoaders:               make(map[string]struct{}),
+		localAddrHelpers:         make(map[string]struct{}),
 		gotExternalsNeeded:       make(map[string]struct{}),
 		gotOffsetsNeeded:         make(map[string]struct{}),
 		gotOffOffsetsNeeded:      make(map[string]struct{}),
@@ -2444,6 +2492,19 @@ func transform(w stringWriter, includes []string, inputs []inputFile, startEndDe
 			writeAarch64Function(w, gotHelperName(symbol), func(w stringWriter) {
 				w.WriteString("\tadrp x0, :got:" + symbol + "\n")
 				w.WriteString("\tldr x0, [x0, :got_lo12:" + symbol + "]\n")
+				w.WriteString("\tret\n")
+			})
+		}
+
+		// Emit address helpers for known symbols within the module.
+		// These use adrp+add which the linker resolves, avoiding the
+		// ±1MiB adr reach limit for large FIPS modules.
+		localAddrNames := sortedSet(d.localAddrHelpers)
+		for _, symbol := range localAddrNames {
+			sym := symbol // capture for closure
+			writeAarch64Function(w, localAddrHelperName(sym), func(w stringWriter) {
+				w.WriteString("\tadrp x0, " + sym + "\n")
+				w.WriteString("\tadd x0, x0, :lo12:" + sym + "\n")
 				w.WriteString("\tret\n")
 			})
 		}
